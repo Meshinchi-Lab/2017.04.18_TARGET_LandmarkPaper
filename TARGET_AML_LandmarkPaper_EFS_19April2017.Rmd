@@ -1,0 +1,484 @@
+---
+title: "EFS for TARGET Landmark paper"
+author: "Jenny Smith"
+date: "April 20, 2017"
+output: pdf_document
+---
+
+
+```{r setup}
+library(knitr)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, fig.align='center')
+knitr::opts_knit$set(root.dir = '~/COG_Meetings_Analysis/2017.04.18_TARGET_LandmarkPaper/')
+```
+
+
+```{r message = FALSE, warning=FALSE}
+library(survival)
+library(RColorBrewer)
+library(colorspace)
+library(stringr)
+library(Biobase)
+library(dplyr)
+library(magrittr)
+library(tables)
+library(VennDiagram)
+getwd()
+```
+
+
+```{r}
+source("H:/scripts/Survival_Analysis/Survplot_Functions_2017.03.31.r")
+```
+
+
+# Define Functions
+```{r}
+#create a list of dataframes from the names of the df objects 
+mergeDF <- function(listOfNames){
+  #given a listOfNames (character vector) of the dataframes, create a list of these dfs and merge them. 
+  
+  listOfDF <- list()
+  groups <- NULL
+  i <- 1
+  
+  #Create a list with the subsetted dataframes. 
+  for (i in 1:length(listOfNames)){
+    name <- listOfNames[i]
+    
+    df <- get(name) 
+    listOfDF[[name]] <- df
+    
+    status <- rep(listOfNames[i], nrow(df)) #make a vector of the mutation status (eg FLT3+,NPM1-)
+    groups <- c(groups, status)
+  }
+  
+  #merge the dataframes. 
+  merged <- do.call("rbind", listOfDF)
+  merged$group <- groups #add column with the mutation status of the patients
+  listOfDF[["merged"]] <- merged
+  
+  # list <- list(listOfDF, merged)
+  
+  return(listOfDF)
+}
+```
+
+
+```{r}
+#Checks for the combination of Mutations by looking at unique rows. 
+uniqueRows <- function(listOfDF, cols){
+  #listOfDF input a named list of dataframes
+  #cols is a numeric or character vector of the columns to select
+  for (df in names(listOfDF)){
+    tmp <- listOfDF[[df]][,cols]
+    print(unique(tmp, margin=1))
+  }  
+}
+```
+
+
+
+SurvivalPlot is a function that is my generic version in Survplot_Functions_2017.03.31.r
+```{r}
+efsCustomPlot <- function(fit, diff){
+    
+    
+    #label with pvalue
+    pVal <- 1-pchisq(diff$chisq, (length(diff$n)-1))
+    pVal <- round(pVal, digits = 4)
+    
+    if (pVal < 0.001){
+      p <- "p < 0.001"
+    }else{
+      p <- paste("p =", pVal, sep = " ")
+    }
+    
+    
+    #X axis position for Num
+    # pos <- (max(fit$time)*0.75)
+
+    #customized plot 
+    efs_plot <- SurvivalPlot(fit, "Mutation Status", "Years",rainbow(5))
+
+    efs_plot <- efs_plot + scale_x_continuous(limits = c(0,6.5), breaks = seq(0,6.5, 1))
+    
+    efs_plot <- efs_plot + annotate(geom="text", x=6, y=1.0, label= p, size=6)
+    
+    #return the ggplot object
+    return(efs_plot)
+}
+```
+
+
+#Read in the datasets to be analyzed
+
+```{r}
+newClassification <- read.csv("H:/COG_Meetings_Analysis/2017.03.27_COG_spring2017/New_stratification_outcomes_updated_2017.03.28.csv", stringsAsFactors = FALSE)
+
+head(newClassification[,c(1,11:18)])
+```
+
+```{r}
+germanSet <- read.csv("H:/COG_Meetings_Analysis/2017.04.18_TARGET_LandmarkPaper/NUP98-JARID1A_Mutations_ClinData.csv", stringsAsFactors = FALSE)
+
+head(germanSet)
+```
+
+```{r}
+colnames(germanSet)[12] <- "First.Event"
+```
+
+
+```{r}
+AAML2961 <- read.csv("EFS_2961_itd_npm_wt1_nup98_data.csv")
+
+colnames(AAML2961) <- c("time.days", "time.years", "FLT3ITD_NEG", "FLT3ITD_P.NUP98_P.orWT1_P","FLT3ITD_P.NPM1_P", "FLT3ITD_P.NPM1_N.NUP98_N.WT1_N" )
+head(AAML2961)
+```
+
+```{r}
+dim(AAML2961)
+```
+
+
+# Prepare the TARGET Survival Data
+```{r}
+colnames(newClassification[,50:65])
+```
+
+
+```{r}
+mutationsData <- newClassification[, c("TARGET.USI","Progression.Free.Survival","First.Event","Event.Free.Survival.Time.in.Days",  "Reason", "FLT3.ITD.positive.","NPM.mutation","WT1.mutation")]
+
+dim(mutationsData)
+```
+
+```{r}
+mutationsData$NUP98.NSD1.mutation <- ifelse(grepl("NUP98-NSD1", mutationsData$Reason), "Yes", "No") #not really accurate. Not sure where Rhonda found the "negative" status as confirmed by sequencing or PCR. 
+```
+
+```{r}
+mutationsData$First.Event <- ifelse(grepl("Censored", mutationsData$First.Event), 0, 1)
+mutationsData$Progression.Free.Survival <- ifelse(grepl("No Failure", mutationsData$Progression.Free.Survival), 0, 1)
+
+```
+
+```{r}
+dim(mutationsData)
+```
+
+```{r}
+head(mutationsData)
+```
+
+```{r}
+lapply(mutationsData[,6:9], function(x) as.factor(x) %>% levels)
+```
+
+Some of the clinical data became shifted over by one cell, and that is why there are 5 patients with FLT3.ITD who have numeric information in that column. These patients were not included
+
+
+```{r}
+mutationsData[which(grepl("0.21|0.48|0.7|0.81|2.2", mutationsData$FLT3.ITD.positive.)), ]
+```
+
+
+```{r}
+FLT3Negatives <- mutationsData[which(grepl("No", mutationsData$FLT3.ITD.positive.)), ]
+
+dim(FLT3Negatives) #783 patients 
+```
+
+This is a check that the numbers are similar to the figure that Rhonda made - she had a total of FLT3-ITD negative patients of 799.
+I am findinging 783, so I have 16 missining patients... 
+
+##Define the groups
+```{r}
+FLT3_p_NPM_p <- mutationsData[which( mutationsData$FLT3.ITD.positive. == "Yes" &  mutationsData$NPM.mutation == "Yes"), ] 
+
+FLT3_n_NPM_p <- mutationsData[which( mutationsData$FLT3.ITD.positive. =="No" &  mutationsData$NPM.mutation == "Yes"), ]
+
+FLT3_n_NPM_n <- mutationsData[which( mutationsData$FLT3.ITD.positive. == "No" &  mutationsData$NPM.mutation == "No"), ] 
+
+FLT3_p_NPM_n_wt1_n_NUP98_n <- mutationsData[which( mutationsData$FLT3.ITD.positive. == "Yes" &  mutationsData$NPM.mutation == "No" &  mutationsData$WT1.mutation == "No" &  mutationsData$NUP98.NSD1.mutation == "No"), ]
+
+FLT3_p_wt1_p_or_NUP98_p <- mutationsData[which(mutationsData$FLT3.ITD.positive. == "Yes" & (mutationsData$WT1.mutation == "Yes" | mutationsData$NUP98.NSD1.mutation == "Yes")), ]
+```
+
+
+##Make a list of the of the subsetted dataframes and merge them 
+```{r}
+targetGroups <- ls(pattern = "FLT3_")
+
+target <- mergeDF(targetGroups)
+
+summary(target)
+```
+
+```{r}
+sapply(target[1:5], FUN=dim)
+
+```
+
+
+
+```{r}
+uniqueRows(target[1:5], c(6:9))
+```
+
+
+#Check overlaps of patients in cohorts here
+
+
+
+
+
+#Prepare the German Set Survival Data
+
+Must convert the numeric codes to yes/no and fill in the time with the time from diagnosis to last followup for patients who are censored. 
+```{r}
+germanSet$FLT3.ITD <- ifelse(germanSet$FLT3.ITD == 2 | germanSet$FLT3.ITD == 4, "Yes", "No")
+
+germanSet$mutWT1 <- ifelse(germanSet$mutWT1 == 4 | germanSet$mutWT1 == 5 | germanSet$mutWT1 == 6, "Yes", "No")
+
+germanSet$mutNPM1 <- ifelse(germanSet$mutNPM1 == 13, "Yes", "No")
+
+germanSet$NUP98.NSD1 <- ifelse(germanSet$NUP98.NSD1 == 9, "Yes", "No")
+
+germanSet$First.Event <- ifelse(germanSet$First.Event == 0, 0, 1)
+
+germanSet$Time.dx.event1..months. <- ifelse(is.na(germanSet$Time.dx.event1..months.), germanSet$Time.DxtoLastFollowUp.Months, germanSet$Time.dx.event1..months.)
+```
+
+
+```{r}
+head(germanSet)
+```
+
+
+
+#Define the Groups for Survival Analysis
+```{r}
+length(which(germanSet$FLT3.ITD == "Yes")) #54 positive FLT3ITD
+length(which(germanSet$FLT3.ITD == "No")) #279 negative FLT3ITD
+```
+
+
+```{r}
+FLT3.p.NPM.p <- germanSet[which(germanSet$FLT3.ITD == "Yes" & germanSet$mutNPM1 == "Yes"), ]
+
+FLT3.n.NPM.p <- germanSet[which(germanSet$FLT3.ITD == "No" & germanSet$mutNPM1 == "Yes"), ]
+
+FLT3.n.NPM.n <- germanSet[which(germanSet$FLT3.ITD == "No" & germanSet$mutNPM1 == "No"), ]
+
+FLT3.p.NPM.n.wt1.n.NUP98.n <- germanSet[which(germanSet$FLT3.ITD == "Yes" & germanSet$mutNPM1 == "No" & germanSet$mutWT1 == "No" & germanSet$NUP98.NSD1 == "No"), ]
+
+FLT3.p.wt1.p.or.NUP98.p <- germanSet[which(germanSet$FLT3.ITD == "Yes" & (germanSet$mutWT1 == "Yes" | germanSet$NUP98.NSD1 == "Yes")),]
+```
+
+
+```{r}
+GermanGroupNames <- ls(pattern = "FLT3\\.")
+
+german <- mergeDF(GermanGroupNames)
+
+summary(german)
+```
+
+```{r}
+sapply(german[1:5], dim)
+```
+
+```{r}
+uniqueRows(german[1:5], c(7:10))
+```
+
+
+#Survival Analysis of TARGET AML 
+
+```{r}
+colnames(target$merged)
+```
+
+###Log-Rank test between all 5 curves
+```{r}
+efs <- SurvObjects(target$merged, c("Event.Free.Survival.Time.in.Days", "First.Event"), "group", "DtoY")
+
+efs
+```
+
+###log-rank test between FLT3+,NPM1+ versus FLT3+,NPM1-
+
+```{r}
+colnames(target$merged)
+```
+
+
+```{r}
+NPM1 <- target$merged[which(grepl("FLT3_p_NPM_p|FLT3_p_NPM_n_wt1_n_NUP98_n", target$merged$group)), ]
+
+unique(NPM1$group)
+```
+
+```{r}
+NPM1_SA <- SurvObjects(NPM1, c("Event.Free.Survival.Time.in.Days", "First.Event"), "group", "DtoY")
+NPM1_SA
+```
+
+
+###FLT3+,NPM1+ and FLT3-,NPM1+ 
+```{r}
+NPM2 <- target$merged[which(grepl("FLT3_p_NPM_p|FLT3_n_NPM_n", target$merged$group)), ]
+
+unique(NPM2$group)
+```
+
+
+```{r}
+NPM2 <- SurvObjects(NPM2, c("Event.Free.Survival.Time.in.Days", "First.Event"), "group", "DtoY" )
+
+NPM2
+```
+
+
+
+#Survival Analysis with German Data
+
+```{r}
+colnames(german$merged)
+```
+
+
+```{r}
+efs_Ger <- SurvObjects(german$merged, c("Time.dx.event1..months.", "First.Event"), "group", "MtoY")
+
+efs_Ger
+```
+
+```{r}
+NPM1gc <- german$merged[which(grepl("FLT3.p.NPM.p|FLT3.p.NPM.n.wt1.n.NUP98.n", german$merged$group)), ] 
+NPM2gc <-  german$merged[which(grepl("FLT3.p.NPM.p|FLT3.n.NPM.n", german$merged$group)), ]
+
+unique(NPM1gc$group)
+unique(NPM2gc$group)
+```
+
+
+```{r}
+NPM1gc_SA <- SurvObjects(NPM1gc, c("Time.dx.event1..months.", "First.Event"), "group", "MtoY")
+
+NPM1gc_SA
+```
+
+```{r}
+NPM2gc_SA <- SurvObjects(NPM2gc, c("Time.dx.event1..months.", "First.Event"), "group", "MtoY")
+NPM2gc_SA
+```
+
+
+
+#Custom Plots for Publication
+
+##TARGET 0531
+```{r warning=FALSE, message=FALSE, fig.height=5, fig.width=11}
+efs0531 <- efsCustomPlot(efs[[1]],efs[[2]])
+
+efs0531$labels$title <- "EFS in TARGET AAML0531 Cohort"
+
+efs0531 <- efs0531 + 
+  scale_linetype_manual(values = c("twodash", "solid", "longdash", "dashed", "dotdash"), guide=FALSE) +
+  scale_color_manual(values = c("FLT3_n_NPM_p"="red", 
+                                "FLT3_p_NPM_p"="green4", 
+                                "FLT3_n_NPM_n"="darkorchid2", 
+                                "FLT3_p_NPM_n_wt1_n_NUP98_n"="blue2",
+                                "FLT3_p_wt1_p_or_NUP98_p"="gold3"),
+                     labels=c("FLT3ITD-, NPM1+ (N=44)",
+                              "FLT3ITD+, NPM1+ (N=34)", 
+                              "FLT3ITD-, NPM1- (N=730)", 
+                              "FLT3ITD+, NPM1-, WT1-, NUP98:NSD1- (N=77)",
+                              "FLT3ITD+, WT1+ or NUP98:NSD1+ (N=57)"), name=" ")
+
+
+# pdf(file="TARGET_AML_EFS_0531_21April2017.pdf", height = 5, width = 11)
+efs0531 
+# dev.off()
+```
+
+##German Cohort
+
+```{r}
+names(german[1:5])
+```
+
+
+```{r warning=FALSE, message=FALSE, fig.height=5, fig.width=11}
+efs_german <- efsCustomPlot(efs_Ger[[1]], efs_Ger[[2]])
+
+
+efs_german$labels$title <- "EFS in German Cohort"
+
+efs_german <- efs_german + 
+  scale_linetype_manual(values = c("solid", "twodash", "longdash", "dashed", "dotdash"), guide=FALSE) +
+  scale_color_manual(values =c("FLT3.p.NPM.p"="green4", 
+                               "FLT3.n.NPM.p"="red", 
+                               "FLT3.n.NPM.n"="darkorchid2", 
+                               "FLT3.p.NPM.n.wt1.n.NUP98.n"="blue2", 
+                               "FLT3.p.wt1.p.or.NUP98.p"="gold3"), 
+                     labels=c("FLT3ITD+, NPM1+ (N=8)", 
+                              "FLT3ITD-, NPM1+ (N=11)", 
+                              "FLT3ITD-, NPM1- (N=268)", 
+                              "FLT3ITD+, NPM1-, WT1-, NUP98:NSD1- (N=26)", 
+                              "FLT3ITD+, WT1+ or NUP98:NSD1+ (N=20)"), name=" ") 
+
+# pdf(file="EFS_german_21April2017.pdf", height = 5, width = 11)
+efs_german
+# dev.off()
+```
+
+
+
+##AAML2961
+```{r}
+colnames(AAML2961)
+```
+
+
+```{r}
+efs_2961 <- ggplot(AAML2961) + 
+  geom_line(mapping = aes(x=AAML2961$time.years, y=AAML2961$FLT3ITD_P.NUP98_P.orWT1_P, colour="FLT3ITD+, WT1+ or NUP98:NSD1+ (N=24)", linetype="solid")) +
+  geom_line(mapping = aes(x=AAML2961$time.years, y=AAML2961$FLT3ITD_P.NPM1_N.NUP98_N.WT1_N, colour="FLT3ITD+, NPM1-, WT1-, NUP98:NSD1- (N=14)", linetype="dashed")) +
+  geom_line(mapping = aes(x=AAML2961$time.years, y=AAML2961$FLT3ITD_P.NPM1_P, colour="FLT3ITD+, NPM1+ (N=7)", linetype="dotdash")) +
+  geom_line(mapping = aes(x=AAML2961$time.years, y=AAML2961$FLT3ITD_NEG, colour="FLT3ITD- (N=536)", linetype="longdash")) +
+  scale_y_continuous(limits = c(0,1.0), breaks = seq(0,1.0, 0.2)) + 
+  scale_x_continuous(limits = c(0,6.5), breaks = seq(0,6.5,1)) + 
+  labs(y= "Fraction Surviving", x ="Follow-up in Years") + 
+  theme(plot.title = element_text(hjust = 0.5, size=18), 
+          panel.background = element_rect(fill="white"), 
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          axis.text.y = element_text(size = 14),
+          axis.text.x = element_text(size=14), 
+          axis.title = element_text(size = 16),
+          legend.text = element_text(size=14),
+          panel.border = element_rect(colour = "dark grey", fill= NA, size=1.0)) 
+```
+
+
+```{r warning=FALSE, message=FALSE, fig.height=5, fig.width=11}
+efs_2961 <- efs_2961 + 
+  scale_linetype_manual(values = c("dashed","solid", "longdash", "dotdash"), guide=FALSE) + 
+  scale_color_manual(name=" ", values = c( "FLT3ITD+, NPM1+ (N=7)"="green4", 
+                                           "FLT3ITD- (N=536)"="darkorchid2", 
+                                           "FLT3ITD+, NPM1-, WT1-, NUP98:NSD1- (N=14)"="blue2",
+                                           "FLT3ITD+, WT1+ or NUP98:NSD1+ (N=24)"="gold3")) +
+  annotate(geom="text", x=6, y=1.0, label= "p < 0.001", size=6) +
+  labs(title="EFS in TARGET AAML2961 Cohort")
+
+# pdf(file="TARGET_AML_EFS_2961_21April2017.pdf", height = 5, width = 11)
+efs_2961
+# dev.off()
+```
+
+
+
